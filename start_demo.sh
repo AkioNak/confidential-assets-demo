@@ -16,6 +16,8 @@ DEMOD=$PWD/demo
 ELDAE=elementsd
 ELCLI=elements-cli
 ELTX=elements-tx
+CONFIDENTIAL=1
+CUPS=100
 
 ## cleanup previous data
 if [ -e ./demo.tmp ]; then
@@ -50,6 +52,11 @@ EOF
     alias ${i}-tx="${ELTX}"
     alias ${i}="${ELCLI} -datadir=${DEMOD}/data/$i"
     echo "${i}_dir=\"-datadir=${DEMOD}/data/$i\"" >> ./demo.tmp
+    if [ "${CONFIDENTIAL}" = "1" ]; then
+        alias ${i}-newaddr="${i} getnewaddress"
+    else
+        alias ${i}-newaddr="${i} validateaddress \$(${i} getnewaddress) | jq -r \".unconfidential\""
+    fi
 done
 
 fred-dae &
@@ -121,29 +128,46 @@ fred getwalletinfo
 
 ## preset asset
 echo -n -e "AIRSKY"
-# fred sendtoaddress $(alice validateaddress $(alice getnewaddress) | jq -r ".unconfidential") 500 "" "" false "AIRSKY" >/dev/null
-fred sendtoaddress $(alice getnewaddress) 500 "" "" false "AIRSKY" >/dev/null
-sleep 1
+for i in `seq 1 ${CUPS}` ; do
+  fred sendtoaddress $(alice-newaddr) 500 "" "" false "AIRSKY" >/dev/null
+  if [ $(( $i % 5 )) -eq 0 ]; then
+    echo -n -e "."
+    fred generate 1 >/dev/null
+    sleep 1
+  fi
+done
 echo -n -e "\nMELON"
-# fred sendtoaddress $(alice validateaddress $(alice getnewaddress) | jq -r ".unconfidential") 100 "" "" false "MELON" >/dev/null
-fred sendtoaddress $(alice getnewaddress) 100 "" "" false "MELON" >/dev/null
+for i in `seq 1 10` ; do
+  fred sendtoaddress $(alice-newaddr) 10 "" "" false "MELON" >/dev/null
+  if [ $(( $i % 5 )) -eq 0 ]; then
+    echo -n -e "."
+    fred generate 1 >/dev/null
+    sleep 1
+  fi
+done
+fred generate 1 >/dev/null
 sleep 1
 echo -n -e "\nMONECRE"
-# fred sendtoaddress $(alice validateaddress $(alice getnewaddress) | jq -r ".unconfidential") 150 "" "" false "MONECRE" >/dev/null
-fred sendtoaddress $(alice getnewaddress) 150 "" "" false "MONECRE" >/dev/null
+fred sendtoaddress $(alice-newaddr) 150 "" "" false "MONECRE" >/dev/null
 echo -n -e "\n"
 fred generate 1 >/dev/null
 sleep 1 # wait for sync
 echo "Alice wallet:"
 alice getwalletinfo
 
-echo -n -e "Sending to Charlie [               ]\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b"
-for i in 100 200 300 400 500; do
-  for j in AIRSKY MELON MONECRE; do
-    # fred sendtoaddress $(charlie validateaddress $(charlie getnewaddress) | jq -r ".unconfidential") $i "" "" false "$j" >/dev/null
-    fred sendtoaddress $(charlie getnewaddress) $i "" "" false "$j" >/dev/null
+PERIOD=5
+NSP=`expr ${CUPS} / ${PERIOD}`
+NBS=`expr ${NSP} + 1`
+echo -n -e "Sending to Charlie [`printf '%*s' ${NSP}`]`printf '%*s' ${NBS}  | tr ' ' '\b'`"
+for i in `seq 1 ${CUPS}` ; do
+  fred sendtoaddress $(charlie-newaddr)   1 "" "" false "AIRSKY"  2>&1 >/dev/null
+  fred sendtoaddress $(charlie-newaddr) 200 "" "" false "MELON"   2>&1 >/dev/null
+  fred sendtoaddress $(charlie-newaddr)  10 "" "" false "MONECRE" 2>&1 >/dev/null
+  if [ $(( $i % $PERIOD )) -eq 0 ]; then
     echo -n -e "."
-  done
+    fred generate 1 >/dev/null
+    sleep 1
+  fi
 done
 echo ""
 fred generate 1
