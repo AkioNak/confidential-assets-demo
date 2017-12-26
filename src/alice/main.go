@@ -16,9 +16,9 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
+	//	"os/exec"
 	"rpc"
-	"strconv"
+	//	"strconv"
 	"strings"
 	"time"
 )
@@ -194,21 +194,43 @@ func doOffer(userOfferRequest UserOfferRequest) (UserOfferResponse, error) {
 	return userOfferResponse, nil
 }
 
+type TransactionInput struct {
+	Txid string `json:"txid"`
+	Vout int64  `json:"vout"`
+}
+
 func appendTransactionInfo(sendToAddr string, sendAsset string, sendAmount int64, offerAsset string, offerDetail UserOfferResByAsset, utxos rpc.UnspentList) (string, error) {
-	template := offerDetail.Transaction
 	cost := offerDetail.Cost
 	fee := offerDetail.Fee
 	change := utxos.GetAmount() - (cost + fee)
-	params := []string{}
+	var inputs []TransactionInput
+	outputs := make(map[string]int64)
+	assets := make(map[string]string)
 
-	if elementsTxOption != "" {
-		params = append(params, elementsTxOption)
+	var rawTx rpc.RawTransaction
+	_, err := rpcClient.RequestAndUnmarshalResult(&rawTx, "decoderawtransaction", offerDetail.Transaction)
+	if err != nil {
+		logger.Println("RPC/decoderawtransaction error:", err, offerDetail.Transaction)
+		return "", err
 	}
-	params = append(params, template)
+
+	for _, v := range rawTx.Vin {
+		inputs = append(inputs, TransactionInput{Txid: v.Txid, Vout: v.Vout})
+	}
+	for _, v := range rawTx.Vout {
+		var k string
+		switch v.ScriptPubKey.Type {
+		case "pubkeyhash":
+			k = v.ScriptPubKey.Addresses[0]
+		default:
+			return "", fmt.Errorf("unrecognized type [%s]", v.ScriptPubKey.Type)
+		}
+		outputs[k] = int64(v.Value)
+		assets[k] = v.Asset
+	}
 
 	for _, u := range utxos {
-		txin := "in=" + u.Txid + ":" + strconv.FormatInt(u.Vout, 10)
-		params = append(params, txin)
+		inputs = append(inputs, TransactionInput{Txid: u.Txid, Vout: u.Vout})
 	}
 
 	if 0 < change {
@@ -216,17 +238,17 @@ func appendTransactionInfo(sendToAddr string, sendAsset string, sendAmount int64
 		if err != nil {
 			return "", err
 		}
-		outAddrChange := "outaddr=" + strconv.FormatInt(change, 10) + ":" + addrChange + ":" + assetIDMap[offerAsset]
-		params = append(params, outAddrChange)
+		outputs[addrChange] = change
+		assets[addrChange] = assetIDMap[offerAsset]
 	}
-	outAddrSend := "outaddr=" + strconv.FormatInt(sendAmount, 10) + ":" + sendToAddr + ":" + assetIDMap[sendAsset]
-	outAddrFee := "outscript=" + strconv.FormatInt(fee, 10) + "::" + assetIDMap[offerAsset]
-	params = append(params, outAddrSend, outAddrFee)
+	outputs[sendToAddr] = sendAmount
+	assets[sendToAddr] = assetIDMap[sendAsset]
+	outputs["fee"] = fee
+	assets["fee"] = assetIDMap[offerAsset]
 
-	out, err := exec.Command(elementsTxCommand, params...).Output()
-
+	out, _, err := rpcClient.RequestAndCastString("createrawtransaction", inputs, outputs, 0, assets)
 	if err != nil {
-		logger.Println("elements-tx error:", err, params, out)
+		logger.Println("RPC/createrawtransaction error:", err, inputs, outputs, assets, out)
 		return "", err
 	}
 
@@ -235,25 +257,48 @@ func appendTransactionInfo(sendToAddr string, sendAsset string, sendAmount int64
 }
 
 func appendTransactionInfoWB(sendToAddr string, sendAsset string, sendAmount int64, offerAsset string, offerDetail UserOfferResByAsset, utxos rpc.UnspentList, loopbackUtxos rpc.UnspentList) (string, error) {
-	template := offerDetail.Transaction
+	// template := offerDetail.Transaction
 	cost := offerDetail.Cost
 	fee := offerDetail.Fee
 	change := utxos.GetAmount() - (cost + fee)
-	params := []string{}
 	lbChange := loopbackUtxos.GetAmount()
+	var inputs []TransactionInput
+	outputs := make(map[string]int64)
+	assets := make(map[string]string)
 
-	if elementsTxOption != "" {
-		params = append(params, elementsTxOption)
-	}
-	params = append(params, template)
+	/*
+		var rawTx rpc.RawTransaction
+		_, err := rpcClient.RequestAndUnmarshalResult(&rawTx, "decoderawtransaction", offerDetail.Transaction)
+		if err != nil {
+			logger.Println("RPC/decoderawtransaction error:", err, offerDetail.Transaction)
+			return "", err
+		}
+		logger.Println(fmt.Sprintf("rawTx:%#v", rawTx))
+
+		for _, v := range rawTx.Vin {
+			inputs = append(inputs, TransactionInput{Txid: v.Txid, Vout: v.Vout})
+		}
+		for _, v := range rawTx.Vout {
+			var k string
+			logger.Println(fmt.Sprintf("Vout:%#v", v))
+			switch v.ScriptPubKey.Type {
+			case "pubkeyhash":
+				k = v.ScriptPubKey.Addresses[0]
+			case "fee":
+				k = "fee"
+			default:
+				return "", fmt.Errorf("unrecognized type [%s]", v.ScriptPubKey.Type)
+			}
+			outputs[k] = int64(v.Value)
+			assets[k] = v.Asset
+		}
+	*/
 
 	for _, u := range utxos {
-		txin := "in=" + u.Txid + ":" + strconv.FormatInt(u.Vout, 10)
-		params = append(params, txin)
+		inputs = append(inputs, TransactionInput{Txid: u.Txid, Vout: u.Vout})
 	}
 	for _, u := range loopbackUtxos {
-		txin := "in=" + u.Txid + ":" + strconv.FormatInt(u.Vout, 10)
-		params = append(params, txin)
+		inputs = append(inputs, TransactionInput{Txid: u.Txid, Vout: u.Vout})
 	}
 
 	if 0 < change {
@@ -261,24 +306,24 @@ func appendTransactionInfoWB(sendToAddr string, sendAsset string, sendAmount int
 		if err != nil {
 			return "", err
 		}
-		outAddrChange := "outaddr=" + strconv.FormatInt(change, 10) + ":" + addrChange + ":" + assetIDMap[offerAsset]
-		params = append(params, outAddrChange)
+		outputs[addrChange] = change
+		assets[addrChange] = assetIDMap[offerAsset]
 	}
 	if 0 < lbChange {
 		addrLbChange, err := rpcClient.GetNewAddr(true)
 		if err != nil {
 			return "", err
 		}
-		outAddrLbChange := "outaddr=" + strconv.FormatInt(lbChange, 10) + ":" + addrLbChange + ":" + assetIDMap[sendAsset]
-		params = append(params, outAddrLbChange)
+		outputs[addrLbChange] = lbChange
+		assets[addrLbChange] = assetIDMap[sendAsset]
 	}
-	outAddrSend := "outaddr=" + strconv.FormatInt(sendAmount, 10) + ":" + sendToAddr + ":" + assetIDMap[sendAsset]
-	params = append(params, outAddrSend)
+	outputs[sendToAddr] = sendAmount
+	assets[sendToAddr] = assetIDMap[sendAsset]
 
-	out, err := exec.Command(elementsTxCommand, params...).Output()
+	out, _, err := rpcClient.RequestAndCastString("createrawtransaction", inputs, outputs, 0, assets)
 
 	if err != nil {
-		logger.Println("elements-tx error:", err, params, out)
+		logger.Println("RPC/createrawtransaction error:", err, inputs, outputs, assets, out)
 		return "", err
 	}
 
@@ -359,6 +404,14 @@ func doSendWithBlinding(offerID string, sendToAddr string) (UserSendResponse, er
 		logger.Println("error:", err)
 		return userSendResponse, err
 	}
+
+	var combinedtx rpc.SignedTransaction
+	_, err = rpcClient.RequestAndUnmarshalResult(&combinedtx, "signrawtransaction", tx+offerDetail.Transaction)
+	if err != nil {
+		logger.Println("RPC/combinetransaction error:", err, tx+offerDetail.Transaction)
+		return userSendResponse, err
+	}
+	tx = combinedtx.Hex
 
 	blindtx, _, err := rpcClient.RequestAndCastString("blindrawtransaction", tx, true, commitments)
 	if err != nil {

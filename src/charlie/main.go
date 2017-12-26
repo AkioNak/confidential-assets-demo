@@ -10,9 +10,9 @@ import (
 	"lib"
 	"log"
 	"os"
-	"os/exec"
+	//	"os/exec"
 	"rpc"
-	"strconv"
+	//	"strconv"
 	"strings"
 	"time"
 )
@@ -186,7 +186,7 @@ func doOffer(offerRequest lib.ExchangeOfferRequest) (lib.ExchangeOfferResponse, 
 	// 2. lookup unspent
 	utxos, err := rpcClient.SearchUnspent(lockList, requestAsset, requestAmount, false)
 	if err != nil {
-		logger.Println("error:", err)
+		logger.Println("error:", err, requestAsset, requestAmount)
 		return offerRes, err
 	}
 
@@ -197,6 +197,11 @@ func doOffer(offerRequest lib.ExchangeOfferRequest) (lib.ExchangeOfferResponse, 
 	}
 
 	return offerRes, err
+}
+
+type TransactionInput struct {
+	Txid string `json:"txid"`
+	Vout int64  `json:"vout"`
 }
 
 func createTransactionTemplate(requestAsset string, requestAmount int64, offer string, cost int64, utxos rpc.UnspentList) (string, error) {
@@ -211,34 +216,29 @@ func createTransactionTemplate(requestAsset string, requestAmount int64, offer s
 		return "", err
 	}
 
-	params := []string{}
-
-	if elementsTxOption != "" {
-		params = append(params, elementsTxOption)
-	}
-	params = append(params, "-create")
-
+	var inputs []TransactionInput
 	for _, u := range utxos {
-		txin := "in=" + u.Txid + ":" + strconv.FormatInt(u.Vout, 10)
-		params = append(params, txin)
+		inputs = append(inputs, TransactionInput{Txid: u.Txid, Vout: u.Vout})
 	}
 
-	outAddrOffer := "outaddr=" + strconv.FormatInt(cost, 10) + ":" + addrOffer + ":" + assetIDMap[offer]
-	params = append(params, outAddrOffer)
+	outputs := make(map[string]int64)
+	assets := make(map[string]string)
+
+	outputs[addrOffer] = cost
+	assets[addrOffer] = assetIDMap[offer]
 
 	if 0 < change {
 		addrChange, err = rpcClient.GetNewAddr(false)
 		if err != nil {
 			return "", err
 		}
-		outAddrChange := "outaddr=" + strconv.FormatInt(change, 10) + ":" + addrChange + ":" + assetIDMap[requestAsset]
-		params = append(params, outAddrChange)
+		outputs[addrChange] = change
+		assets[addrChange] = assetIDMap[requestAsset]
 	}
 
-	out, err := exec.Command(elementsTxCommand, params...).Output()
-
+	out, _, err := rpcClient.RequestAndCastString("createrawtransaction", inputs, outputs, 0, assets)
 	if err != nil {
-		logger.Println("elements-tx error:", err, params, out)
+		logger.Println("RPC/createrawtransaction error:", err, inputs, outputs, assets, out)
 		return "", err
 	}
 
@@ -259,44 +259,46 @@ func createTransactionTemplateWB(requestAsset string, requestAmount int64, offer
 		return "", err
 	}
 
-	params := []string{}
-
-	if elementsTxOption != "" {
-		params = append(params, elementsTxOption)
-	}
-	params = append(params, "-create")
-
+	var inputs []TransactionInput
 	for _, u := range utxos {
-		txin := "in=" + u.Txid + ":" + strconv.FormatInt(u.Vout, 10)
-		params = append(params, txin)
+		inputs = append(inputs, TransactionInput{Txid: u.Txid, Vout: u.Vout})
 	}
 	for _, u := range loopbackUtxos {
-		txin := "in=" + u.Txid + ":" + strconv.FormatInt(u.Vout, 10)
-		params = append(params, txin)
+		inputs = append(inputs, TransactionInput{Txid: u.Txid, Vout: u.Vout})
 	}
 
-	outAddrOffer := "outaddr=" + strconv.FormatInt(lbChange, 10) + ":" + addrOffer + ":" + assetIDMap[offer]
-	params = append(params, outAddrOffer)
+	outputs := make(map[string]int64)
+	assets := make(map[string]string)
+
+	outputs[addrOffer] = lbChange
+	assets[addrOffer] = assetIDMap[offer]
 
 	if 0 < change {
 		addrChange, err = rpcClient.GetNewAddr(true)
 		if err != nil {
 			return "", err
 		}
-		outAddrChange := "outaddr=" + strconv.FormatInt(change, 10) + ":" + addrChange + ":" + assetIDMap[requestAsset]
-		params = append(params, outAddrChange)
+		outputs[addrChange] = change
+		assets[addrChange] = assetIDMap[requestAsset]
 	}
-	outAddrFee := "outscript=" + strconv.FormatInt(offerRes.Fee, 10) + "::" + assetIDMap[offer]
-	params = append(params, outAddrFee)
+	outputs["fee"] = offerRes.Fee
+	assets["fee"] = assetIDMap[offer]
 
-	out, err := exec.Command(elementsTxCommand, params...).Output()
+	logger.Println(fmt.Sprintf("outputs:%#v", outputs))
+	logger.Println(fmt.Sprintf("assets:%#v", assets))
+	out, _, err := rpcClient.RequestAndCastString("createrawtransaction", inputs, outputs, 0, assets)
 
 	if err != nil {
-		logger.Println("elements-tx error:", err, params, out)
+		logger.Println("RPC/createrawtransaction error:", err, inputs, outputs, assets, out)
 		return "", err
 	}
 
 	txTemplate := strings.TrimRight(string(out), "\n")
+
+	var rawTx rpc.RawTransaction
+	_, err = rpcClient.RequestAndUnmarshalResult(&rawTx, "decoderawtransaction", txTemplate)
+	logger.Println(fmt.Sprintf("rawTx:%#v", rawTx))
+
 	return txTemplate, nil
 }
 
