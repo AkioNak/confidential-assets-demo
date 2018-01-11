@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"lib"
 	"net/http"
 	"time"
 )
@@ -200,6 +201,83 @@ func NewRpc(url, user, pass string) *Rpc {
 
 // Request request server
 func (rpc *Rpc) Request(method string, params ...interface{}) (RpcResponse, error) {
+	var res RpcResponse
+	var err error
+	var ok bool
+
+	if len(params) == 0 {
+		params = []interface{}{}
+	}
+
+	in := make([]interface{}, 3)
+	in[0] = rpc
+	in[1] = method
+	in[2] = params
+	out := <-lib.GetDispatcherInstance().Enqueue(ProccesRequest, in)
+
+	if len(out) != 2 {
+		return res, fmt.Errorf("Illegal numbers of output:%v", out)
+	}
+
+	if out[0] == nil {
+		if out[1] == nil {
+			return res, fmt.Errorf("both res and err are nil")
+		}
+	} else {
+		res, ok = out[0].(RpcResponse)
+		if !ok {
+			return res, fmt.Errorf("Type mismatch - not RpcResponse:%v", out[0])
+		}
+	}
+
+	if out[1] == nil {
+		return res, nil
+	}
+
+	err, ok = out[1].(error)
+	if !ok {
+		return res, fmt.Errorf("Type mismatch - not error:%v", out[1])
+	}
+
+	return res, err
+}
+
+func ProccesRequest(in []interface{}) []interface{} {
+	out := make([]interface{}, 2)
+	out[0] = nil
+	out[1] = nil
+
+	if len(in) != 3 {
+		out[1] = fmt.Errorf("Illegal numbers of input:%d:%v", len(in), in)
+		return out
+	}
+
+	rpc, ok := in[0].(*Rpc)
+	if !ok {
+		out[1] = fmt.Errorf("Type mismatch - not *Rpc: input[0]:%v", in[0])
+		return out
+	}
+	method, ok := in[1].(string)
+	if !ok {
+		out[1] = fmt.Errorf("Type mismatch - not string: input[1]:%v", in[1])
+		return out
+	}
+
+	if in[2] == nil {
+		in[2] = []interface{}{}
+	}
+	params, ok := in[2].([]interface{})
+	if !ok {
+		out[1] = fmt.Errorf("Type mismatch - not []interface{}: input[2]:%v", in[2])
+		return out
+	}
+
+	out[0], out[1] = rpc.RequestDirect(method, params...)
+
+	return out
+}
+
+func (rpc *Rpc) RequestDirect(method string, params ...interface{}) (RpcResponse, error) {
 	var res RpcResponse
 	if len(params) == 0 {
 		params = []interface{}{}
